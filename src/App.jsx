@@ -67,7 +67,7 @@ function App() {
       if (urlParts.length > 1) {
         const fileName = urlParts[1];
         const { error } = await supabase.storage.from('media').remove([fileName]);
-        if (error) console.error("Fehler beim Löschen der Datei aus dem Bucket:", error.message);
+        if (error) console.error("Fehler beim Löschen:", error.message);
       }
     } catch (err) {
       console.error("Löschen fehlgeschlagen:", err);
@@ -85,7 +85,7 @@ function App() {
         await window.screen.orientation.lock('landscape');
       }
     } catch (err) {
-      console.warn("Fullscreen/Orientation API error:", err);
+      console.warn("Fullscreen API error:", err);
     }
   };
 
@@ -147,6 +147,7 @@ function App() {
     if (!activePresentation) fetchFolders()
   }, [currentFolder, activePresentation])
 
+  // EXTREM WICHTIG: Die Leinwand skaliert jetzt exakt in den Bereich, der ÜBRIG bleibt, nachdem die Buttons unten Platz genommen haben!
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
@@ -371,14 +372,12 @@ function App() {
     e.stopPropagation()
     if (slides.length <= 1) return showToast("Die letzte Folie kann nicht gelöscht werden.", 'error')
     requestConfirm("Folie wirklich löschen?", async () => {
-
       const slideToDelete = slides[index];
       for (const el of slideToDelete.elements) {
         if ((el.type === 'image' || el.type === 'video') && el.src.includes('supabase.co')) {
           await deleteStorageFile(el.src);
         }
       }
-
       const newSlides = slides.filter((_, i) => i !== index)
       updateSlidesState(newSlides)
       setCurrentSlideIndex(Math.max(0, index - 1))
@@ -422,7 +421,7 @@ function App() {
   }
 
   const addVideoUrl = () => {
-    const url = window.prompt("Bitte füge hier einen YouTube-Link oder direkten Video-Link (.mp4) ein:\n(Dies lädt das Video sofort, ohne stundenlanges Warten!)");
+    const url = window.prompt("Bitte füge hier einen YouTube-Link oder direkten Video-Link (.mp4) ein:");
     if (!url) return;
     const newId = Date.now();
     const newElement = { id: newId, type: 'video-url', src: url, x: 200, y: 100, width: 600, height: 400, rotation: 0, animation: 'none' };
@@ -432,12 +431,9 @@ function App() {
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0]; if (!file) return;
-
-    // Warnung bei sehr großen Dateien
     if (file.size > 50 * 1024 * 1024) {
       showToast("Große Datei: Der Upload läuft im Hintergrund. Nutze für noch schnellere Videos den 'Web-Video' Button!", "success");
     }
-
     setIsUploading(true); let fileToUpload = file;
     if (file.type.startsWith('image/')) {
       try { fileToUpload = await imageCompression(file, { maxSizeMB: 0.5, maxWidthOrHeight: 1920, useWebWorker: true }) } catch (error) { console.error(error) }
@@ -452,6 +448,24 @@ function App() {
     setActiveElementId(newId)
     setIsUploading(false); event.target.value = null
   }
+
+  // Dieser Klick-Handler liegt jetzt auf dem ganzen Hintergrund!
+  // Wenn er ein Video trifft, blockt er das Klicken. Ansonsten wechselt er die Folie.
+  const handleViewerClick = (e) => {
+    // Ignoriere Klicks, die auf einem Video oder Iframe passieren!
+    if (e.target.tagName.toLowerCase() === 'video' || e.target.tagName.toLowerCase() === 'iframe') {
+      return;
+    }
+
+    const clickX = e.clientX;
+    const screenWidth = window.innerWidth;
+
+    if (clickX > screenWidth / 2) {
+      if (currentSlideIndex < slides.length - 1) setCurrentSlideIndex(prev => prev + 1);
+    } else {
+      if (currentSlideIndex > 0) setCurrentSlideIndex(prev => prev - 1);
+    }
+  };
 
   const renderContent = (el, isViewer) => {
     const commonStyle = { width: '100%', height: '100%', objectFit: 'fill' };
@@ -476,19 +490,16 @@ function App() {
     } else if (el.type === 'image') {
       content = <img src={el.src} style={{ ...commonStyle, pointerEvents: 'none' }} draggable="false" />
     } else if (el.type === 'video') {
-      // WICHTIGER FIX: pointerEvents='auto' und controls={true} erlauben das Klicken/Abspielen des Videos!
-      content = <video src={el.src} controls={true} style={{ ...commonStyle, pointerEvents: 'auto' }} />
+      // WICHTIG: pointerEvents: 'auto' erlaubt Klicks auf Play/Pause, e.stopPropagation verhindert Folienwechsel
+      content = <video src={el.src} controls={true} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} style={{ ...commonStyle, pointerEvents: isViewer ? 'auto' : 'none' }} />
     } else if (el.type === 'video-url') {
       if (el.src.includes('youtube.com') || el.src.includes('youtu.be')) {
         let videoId = '';
-        if (el.src.includes('youtu.be/')) {
-          videoId = el.src.split('youtu.be/')[1]?.split('?')[0];
-        } else {
-          videoId = el.src.split('v=')[1]?.split('&')[0];
-        }
-        content = <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${videoId}?rel=0`} frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen style={{ ...commonStyle, pointerEvents: isViewer ? 'auto' : 'none' }}></iframe>
+        if (el.src.includes('youtu.be/')) videoId = el.src.split('youtu.be/')[1]?.split('?')[0];
+        else videoId = el.src.split('v=')[1]?.split('&')[0];
+        content = <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${videoId}?rel=0`} frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} style={{ ...commonStyle, pointerEvents: isViewer ? 'auto' : 'none' }}></iframe>
       } else {
-        content = <video src={el.src} controls={true} style={{ ...commonStyle, pointerEvents: 'auto' }} />
+        content = <video src={el.src} controls={true} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} style={{ ...commonStyle, pointerEvents: isViewer ? 'auto' : 'none' }} />
       }
     } else if (el.type === 'shape') {
       if (el.shapeType === 'line') {
@@ -505,7 +516,6 @@ function App() {
     );
   }
 
-  // --- DIE NEUEN, SEHR KRÄFTIGEN FARBEN ---
   const globalStyles = `
     * { box-sizing: border-box; }
     body { margin: 0; padding: 0; background-color: #05080F; color: #FFF9E6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; overflow-x: hidden; }
@@ -574,22 +584,6 @@ function App() {
     </>
   )
 
-  // NEU: Diese Funktion verarbeitet die Klicks links/rechts im Viewer, ignoriert aber Videos, iFrames und die Bodenleiste
-  const handleViewerClick = (e) => {
-    // Verhindern, dass Video-Controls oder Buttons den Folienwechsel auslösen
-    if (e.target.tagName.toLowerCase() === 'video' || e.target.tagName.toLowerCase() === 'iframe' || e.target.closest('button') || e.target.closest('.bottom-nav-bar')) {
-      return;
-    }
-    const clickX = e.clientX;
-    const screenWidth = window.innerWidth;
-
-    if (clickX > screenWidth / 2) {
-      if (currentSlideIndex < slides.length - 1) setCurrentSlideIndex(prev => prev + 1);
-    } else {
-      if (currentSlideIndex > 0) setCurrentSlideIndex(prev => prev - 1);
-    }
-  };
-
   if (isLoading) {
     return (
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', background: 'radial-gradient(circle at center, #1A233A 0%, #05080F 100%)' }}>
@@ -614,7 +608,8 @@ function App() {
 
     if (isFullscreenMode) {
       return (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'black', zIndex: 9999, display: 'flex', flexDirection: 'column' }}>
+        // NEU: Flex-Layout verhindert Überlappen. height: 100vh erzwingt, dass alle Blöcke den Platz sauber aufteilen.
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: '#05080F', zIndex: 9999, display: 'flex', flexDirection: 'column' }}>
           <style>{globalStyles}</style>
 
           <div className="mobile-rotate-overlay active">
@@ -626,41 +621,37 @@ function App() {
             </button>
           </div>
 
-          {/* Der gesamte Bereich horcht jetzt auf Klicks, lässt aber Videos in Ruhe! */}
-          <div className="fullscreen-viewer-content" style={{ flex: 1, position: 'relative', width: '100%', height: '100%', cursor: 'pointer' }} onClick={handleViewerClick}>
-
-            <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
-              <div style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, minWidth: `${CANVAS_WIDTH}px`, minHeight: `${CANVAS_HEIGHT}px`, flexShrink: 0, backgroundColor: 'black', position: 'relative', transform: `scale(${scale})`, transformOrigin: 'center' }}>
-                {currentSlide?.elements.map(el => (
-                  <div key={`${el.id}-${el.animation}`} className={`anim-${el.animation || 'none'}`} style={{ position: 'absolute', left: `${el.x}px`, top: `${el.y}px`, width: getPx(el.width), height: getPx(el.height) }}>
-                    {renderContent(el, true)}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* NEUE, NICHT-ÜBERLAPPENDE BOTTOM BAR (Inklusive "Beenden" Button) */}
-            <div className="bottom-nav-bar" style={{ position: 'absolute', bottom: '30px', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '15px', alignItems: 'center', backgroundColor: 'rgba(5, 8, 15, 0.85)', padding: '10px 20px', borderRadius: '50px', backdropFilter: 'blur(10px)', border: '1px solid rgba(212, 175, 55, 0.3)', zIndex: 1000 }}>
-
-              <button onClick={async (e) => { e.stopPropagation(); await exitFullscreen(); setIsFullscreenMode(false); if (!session) setActivePresentation(null); }} className="btn-glass" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}>
-                <ChevronLeft size={18} /> Beenden
-              </button>
-
-              <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(212, 175, 55, 0.3)' }} />
-
-              <button disabled={currentSlideIndex === 0} onClick={(e) => { e.stopPropagation(); setCurrentSlideIndex(currentSlideIndex - 1); }} className="btn-glass" style={{ padding: '8px', borderRadius: '50%' }}>
-                <ChevronLeft size={24} color="#E8C56C" />
-              </button>
-
-              <span style={{ display: 'flex', alignItems: 'center', fontSize: '1.2rem', color: '#E8C56C', fontWeight: 'bold', minWidth: '50px', justifyContent: 'center' }}>
-                {currentSlideIndex + 1} / {slides.length}
-              </span>
-
-              <button disabled={currentSlideIndex === slides.length - 1} onClick={(e) => { e.stopPropagation(); setCurrentSlideIndex(currentSlideIndex + 1); }} className="btn-glass" style={{ padding: '8px', borderRadius: '50%' }}>
-                <ChevronRight size={24} color="#E8C56C" />
-              </button>
+          {/* OBERER BEREICH: Präsentation (flex: 1 nimmt den restlichen Platz ein) */}
+          <div ref={containerRef} onClick={handleViewerClick} className="fullscreen-viewer-content" style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', position: 'relative', cursor: 'pointer' }}>
+            <div style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, minWidth: `${CANVAS_WIDTH}px`, minHeight: `${CANVAS_HEIGHT}px`, flexShrink: 0, backgroundColor: 'black', position: 'relative', transform: `scale(${scale})`, transformOrigin: 'center' }}>
+              {currentSlide?.elements.map(el => (
+                <div key={`${el.id}-${el.animation}`} className={`anim-${el.animation || 'none'}`} style={{ position: 'absolute', left: `${el.x}px`, top: `${el.y}px`, width: getPx(el.width), height: getPx(el.height) }}>
+                  {renderContent(el, true)}
+                </div>
+              ))}
             </div>
           </div>
+
+          {/* UNTERER BEREICH: Feste Leiste (Verdeckt keine Folie mehr!) */}
+          <div className="bottom-nav-bar" style={{ flexShrink: 0, height: '80px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '15px', backgroundColor: '#0B0F19', borderTop: '1px solid rgba(212, 175, 55, 0.2)', padding: '0 20px', zIndex: 1000 }}>
+
+            <button onClick={async (e) => { e.stopPropagation(); await exitFullscreen(); setIsFullscreenMode(false); if (!session) setActivePresentation(null); }} className="btn-glass" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold', position: 'absolute', left: '20px' }}>
+              <ChevronLeft size={18} /> Beenden
+            </button>
+
+            <button disabled={currentSlideIndex === 0} onClick={(e) => { e.stopPropagation(); setCurrentSlideIndex(currentSlideIndex - 1); }} className="btn-glass" style={{ padding: '8px', borderRadius: '50%' }}>
+              <ChevronLeft size={24} color="#E8C56C" />
+            </button>
+
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: '1.2rem', color: '#E8C56C', fontWeight: 'bold', minWidth: '50px', justifyContent: 'center' }}>
+              {currentSlideIndex + 1} / {slides.length}
+            </span>
+
+            <button disabled={currentSlideIndex === slides.length - 1} onClick={(e) => { e.stopPropagation(); setCurrentSlideIndex(currentSlideIndex + 1); }} className="btn-glass" style={{ padding: '8px', borderRadius: '50%' }}>
+              <ChevronRight size={24} color="#E8C56C" />
+            </button>
+          </div>
+
           {uiOverlays}
         </div>
       )
@@ -697,12 +688,10 @@ function App() {
             </button>
             <div style={{ width: '1px', height: '20px', backgroundColor: 'rgba(212, 175, 55, 0.3)', margin: '0 2px' }}></div>
             <input type="file" accept="image/*,video/*" ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} />
-
             <button onClick={() => fileInputRef.current.click()} disabled={isUploading} className="btn-glass" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.9rem' }}>
               <ImageIcon size={14} /> {isUploading ? 'Medien...' : 'Datei-Video'}
             </button>
 
-            {/* NEU: WEB-VIDEO BUTTON */}
             <button onClick={addVideoUrl} className="btn-glass" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.9rem' }}>
               <LinkIcon size={14} /> Web-Video
             </button>
