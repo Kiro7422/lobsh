@@ -60,6 +60,23 @@ function App() {
     setConfirmDialog({ message, onConfirm })
   }
 
+  // NEU: HILFSFUNKTION UM DATEIEN PHYSISCH AUS DEM BUCKET ZU LÖSCHEN
+  const deleteStorageFile = async (url) => {
+    if (!url || typeof url !== 'string') return;
+    try {
+      // Isoliere den Dateinamen aus der Supabase URL
+      const urlParts = url.split('/public/media/');
+      if (urlParts.length > 1) {
+        const fileName = urlParts[1];
+        const { error } = await supabase.storage.from('media').remove([fileName]);
+        if (error) console.error("Fehler beim Löschen der Datei aus dem Bucket:", error.message);
+        else console.log("Erfolgreich aus Bucket gelöscht:", fileName);
+      }
+    } catch (err) {
+      console.error("Löschen fehlgeschlagen:", err);
+    }
+  };
+
   const enterFullscreenAndLandscape = async () => {
     try {
       const el = document.documentElement;
@@ -104,6 +121,20 @@ function App() {
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
     };
   }, [session]);
+
+  // Tastatursteuerung im Vollbildmodus (Pfeiltasten & Leertaste)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (!isFullscreenMode) return;
+      if (e.key === 'ArrowRight' || e.key === 'Space' || e.key === ' ') {
+        setCurrentSlideIndex(prev => Math.min(prev + 1, slides.length - 1));
+      } else if (e.key === 'ArrowLeft') {
+        setCurrentSlideIndex(prev => Math.max(prev - 1, 0));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreenMode, slides.length]);
 
   // Loading Screen Timer (4 Sekunden)
   useEffect(() => {
@@ -186,6 +217,7 @@ function App() {
   const handleIconUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
+
     setIsUploadingIcon(true);
     let fileToUpload = file;
     try { fileToUpload = await imageCompression(file, { maxSizeMB: 0.1, maxWidthOrHeight: 200, useWebWorker: true }); }
@@ -222,6 +254,26 @@ function App() {
   const deleteButton = async (e, folderId) => {
     e.stopPropagation()
     requestConfirm("Bist du sicher, dass du diesen Button und alle seine Inhalte löschen möchtest?", async () => {
+
+      // VOR dem Löschen des Buttons: Alle Medien-Dateien im Bucket löschen
+      const folderToDelete = folders.find(f => f.id === folderId);
+      if (folderToDelete) {
+        // 1. Eigenes Icon löschen
+        if (folderToDelete.icon_url) {
+          await deleteStorageFile(folderToDelete.icon_url);
+        }
+        // 2. Alle Bilder und Videos in den Präsentations-Folien löschen
+        if (folderToDelete.slides) {
+          for (const slide of folderToDelete.slides) {
+            for (const el of slide.elements) {
+              if (el.type === 'image' || el.type === 'video') {
+                await deleteStorageFile(el.src);
+              }
+            }
+          }
+        }
+      }
+
       await supabase.from('folders').delete().eq('id', folderId)
       showToast("Erfolgreich gelöscht!")
       fetchFolders()
@@ -242,7 +294,6 @@ function App() {
     setShowAddMenu(false); setEditingFolder(null); setNameDe(''); setNameAr(''); setType('folder'); setCustomIconUrl('');
   }
 
-  // --- UNDO / REDO LOGIK ---
   const updateSlidesState = (newSlides) => {
     setSlides(newSlides);
     const newHistory = history.slice(0, historyStep + 1);
@@ -332,7 +383,16 @@ function App() {
   const deleteSlide = (e, index) => {
     e.stopPropagation()
     if (slides.length <= 1) return showToast("Die letzte Folie kann nicht gelöscht werden.", 'error')
-    requestConfirm("Folie wirklich löschen?", () => {
+    requestConfirm("Folie wirklich löschen?", async () => {
+
+      // Alle Medien auf dieser speziellen Folie aus dem Bucket löschen
+      const slideToDelete = slides[index];
+      for (const el of slideToDelete.elements) {
+        if (el.type === 'image' || el.type === 'video') {
+          await deleteStorageFile(el.src);
+        }
+      }
+
       const newSlides = slides.filter((_, i) => i !== index)
       updateSlidesState(newSlides)
       setCurrentSlideIndex(Math.max(0, index - 1))
@@ -352,6 +412,13 @@ function App() {
   }
 
   const deleteElement = async (elementId) => {
+    const elToDelete = slides[currentSlideIndex].elements.find(el => el.id === elementId);
+
+    // Physisches Löschen des Bildes/Videos aus dem Bucket
+    if (elToDelete && (elToDelete.type === 'image' || elToDelete.type === 'video')) {
+      await deleteStorageFile(elToDelete.src);
+    }
+
     const newElements = slides[currentSlideIndex].elements.filter(el => el.id !== elementId)
     updateSlideElements(newElements)
     setActiveElementId(null)
@@ -411,7 +478,7 @@ function App() {
     } else if (el.type === 'image') {
       content = <img src={el.src} style={{ ...commonStyle, pointerEvents: 'none' }} draggable="false" />
     } else if (el.type === 'video') {
-      content = <video src={el.src} controls={isViewer} style={{ ...commonStyle, pointerEvents: isViewer ? 'auto' : 'none' }} />
+      content = <video src={el.src} controls={true} style={{ ...commonStyle, pointerEvents: 'auto' }} />
     } else if (el.type === 'shape') {
       if (el.shapeType === 'line') {
         content = <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center' }}><div style={{ width: '100%', height: '4px', backgroundColor: el.color }}></div></div>
@@ -495,6 +562,20 @@ function App() {
     </>
   )
 
+  const handleViewerClick = (e) => {
+    if (e.target.tagName.toLowerCase() === 'video' || e.target.closest('button') || e.target.closest('.bottom-nav-bar')) {
+      return;
+    }
+    const clickX = e.clientX;
+    const screenWidth = window.innerWidth;
+
+    if (clickX > screenWidth / 2) {
+      if (currentSlideIndex < slides.length - 1) setCurrentSlideIndex(prev => prev + 1);
+    } else {
+      if (currentSlideIndex > 0) setCurrentSlideIndex(prev => prev - 1);
+    }
+  };
+
   if (isLoading) {
     return (
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', background: 'radial-gradient(circle at center, #1A233A 0%, #05080F 100%)' }}>
@@ -507,7 +588,6 @@ function App() {
         <div style={{ animation: 'fadeInUp 2s ease forwards 1s', opacity: 0, textAlign: 'center', marginTop: '20px' }}>
           <p style={{ color: 'rgba(212, 175, 55, 0.7)', fontFamily: 'monospace', letterSpacing: '3px', margin: 0, fontSize: '0.9rem' }}>ENTWICKELT VON</p>
           <p style={{ color: '#f5d76e', fontSize: '1.5rem', fontWeight: 'bold', letterSpacing: '5px', margin: '5px 0 0 0', textShadow: '0 0 15px rgba(212,175,55,0.4)' }}>KIRO KOLTA</p>
-          {/* Die neue Unterschrift der Kirche */}
           <p style={{ color: 'rgba(253, 251, 247, 0.6)', marginTop: '15px', fontSize: '0.9rem', letterSpacing: '1px' }}>Kirche der Hl. Maria und des Hl. Philopater Mercurius Unna</p>
         </div>
 
@@ -532,9 +612,9 @@ function App() {
             </button>
           </div>
 
-          <div className="fullscreen-viewer-content" style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
+          <div className="fullscreen-viewer-content" style={{ flex: 1, position: 'relative', width: '100%', height: '100%', cursor: 'pointer' }} onClick={handleViewerClick}>
 
-            <button onClick={async () => { await exitFullscreen(); setIsFullscreenMode(false); if (!session) setActivePresentation(null); }} style={{ position: 'absolute', top: '20px', left: '20px', padding: '10px 20px', backgroundColor: 'rgba(212, 175, 55, 0.15)', color: '#E8C56C', border: '1px solid rgba(212, 175, 55, 0.4)', borderRadius: '30px', cursor: 'pointer', zIndex: 1000, backdropFilter: 'blur(5px)', transition: '0.3s' }} className="btn-glass">
+            <button onClick={async (e) => { e.stopPropagation(); await exitFullscreen(); setIsFullscreenMode(false); if (!session) setActivePresentation(null); }} style={{ position: 'absolute', top: '20px', left: '20px', padding: '10px 20px', backgroundColor: 'rgba(212, 175, 55, 0.15)', color: '#E8C56C', border: '1px solid rgba(212, 175, 55, 0.4)', borderRadius: '30px', cursor: 'pointer', zIndex: 1000, backdropFilter: 'blur(5px)', transition: '0.3s' }} className="btn-glass">
               <ChevronLeft size={20} style={{ verticalAlign: 'middle', marginRight: '5px' }} /> {session ? 'Beenden' : 'Zurück'}
             </button>
 
