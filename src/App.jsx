@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import { Rnd } from 'react-rnd'
 import imageCompression from 'browser-image-compression'
-import { Trash2, Edit2, ChevronLeft, ChevronRight, Play, Image as ImageIcon, Type, Save, LogOut, Plus, Folder, FileText, Settings, ArrowUp, ArrowDown, CheckCircle, AlertCircle, Move, RotateCcw, Bold, AlignLeft, AlignCenter, AlignRight, ArrowRight, Minus, Undo, Redo } from 'lucide-react'
+import { Trash2, Edit2, ChevronLeft, ChevronRight, Play, Image as ImageIcon, Type, Save, LogOut, Plus, Folder, FileText, Settings, ArrowUp, ArrowDown, CheckCircle, AlertCircle, Move, RotateCcw, Bold, AlignLeft, AlignCenter, AlignRight, ArrowRight, Minus, Undo, Redo, Link as LinkIcon } from 'lucide-react'
 
 // Feste Kino-Leinwandgröße (16:9) für pixelgenaue Darstellung
 const CANVAS_WIDTH = 1280
@@ -60,17 +60,14 @@ function App() {
     setConfirmDialog({ message, onConfirm })
   }
 
-  // NEU: HILFSFUNKTION UM DATEIEN PHYSISCH AUS DEM BUCKET ZU LÖSCHEN
   const deleteStorageFile = async (url) => {
     if (!url || typeof url !== 'string') return;
     try {
-      // Isoliere den Dateinamen aus der Supabase URL
       const urlParts = url.split('/public/media/');
       if (urlParts.length > 1) {
         const fileName = urlParts[1];
         const { error } = await supabase.storage.from('media').remove([fileName]);
         if (error) console.error("Fehler beim Löschen der Datei aus dem Bucket:", error.message);
-        else console.log("Erfolgreich aus Bucket gelöscht:", fileName);
       }
     } catch (err) {
       console.error("Löschen fehlgeschlagen:", err);
@@ -122,7 +119,6 @@ function App() {
     };
   }, [session]);
 
-  // Tastatursteuerung im Vollbildmodus (Pfeiltasten & Leertaste)
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (!isFullscreenMode) return;
@@ -136,7 +132,6 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreenMode, slides.length]);
 
-  // Loading Screen Timer (4 Sekunden)
   useEffect(() => {
     const timer = setTimeout(() => setIsLoading(false), 4000)
     return () => clearTimeout(timer)
@@ -217,7 +212,6 @@ function App() {
   const handleIconUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
-
     setIsUploadingIcon(true);
     let fileToUpload = file;
     try { fileToUpload = await imageCompression(file, { maxSizeMB: 0.1, maxWidthOrHeight: 200, useWebWorker: true }); }
@@ -254,26 +248,19 @@ function App() {
   const deleteButton = async (e, folderId) => {
     e.stopPropagation()
     requestConfirm("Bist du sicher, dass du diesen Button und alle seine Inhalte löschen möchtest?", async () => {
-
-      // VOR dem Löschen des Buttons: Alle Medien-Dateien im Bucket löschen
       const folderToDelete = folders.find(f => f.id === folderId);
       if (folderToDelete) {
-        // 1. Eigenes Icon löschen
-        if (folderToDelete.icon_url) {
-          await deleteStorageFile(folderToDelete.icon_url);
-        }
-        // 2. Alle Bilder und Videos in den Präsentations-Folien löschen
+        if (folderToDelete.icon_url) await deleteStorageFile(folderToDelete.icon_url);
         if (folderToDelete.slides) {
           for (const slide of folderToDelete.slides) {
             for (const el of slide.elements) {
-              if (el.type === 'image' || el.type === 'video') {
+              if ((el.type === 'image' || el.type === 'video') && el.src.includes('supabase.co')) {
                 await deleteStorageFile(el.src);
               }
             }
           }
         }
       }
-
       await supabase.from('folders').delete().eq('id', folderId)
       showToast("Erfolgreich gelöscht!")
       fetchFolders()
@@ -385,10 +372,9 @@ function App() {
     if (slides.length <= 1) return showToast("Die letzte Folie kann nicht gelöscht werden.", 'error')
     requestConfirm("Folie wirklich löschen?", async () => {
 
-      // Alle Medien auf dieser speziellen Folie aus dem Bucket löschen
       const slideToDelete = slides[index];
       for (const el of slideToDelete.elements) {
-        if (el.type === 'image' || el.type === 'video') {
+        if ((el.type === 'image' || el.type === 'video') && el.src.includes('supabase.co')) {
           await deleteStorageFile(el.src);
         }
       }
@@ -413,12 +399,9 @@ function App() {
 
   const deleteElement = async (elementId) => {
     const elToDelete = slides[currentSlideIndex].elements.find(el => el.id === elementId);
-
-    // Physisches Löschen des Bildes/Videos aus dem Bucket
-    if (elToDelete && (elToDelete.type === 'image' || elToDelete.type === 'video')) {
+    if (elToDelete && (elToDelete.type === 'image' || elToDelete.type === 'video') && elToDelete.src.includes('supabase.co')) {
       await deleteStorageFile(elToDelete.src);
     }
-
     const newElements = slides[currentSlideIndex].elements.filter(el => el.id !== elementId)
     updateSlideElements(newElements)
     setActiveElementId(null)
@@ -438,8 +421,23 @@ function App() {
     setActiveElementId(newId)
   }
 
+  const addVideoUrl = () => {
+    const url = window.prompt("Bitte füge hier einen YouTube-Link oder direkten Video-Link (.mp4) ein:\n(Dies lädt das Video sofort, ohne stundenlanges Warten!)");
+    if (!url) return;
+    const newId = Date.now();
+    const newElement = { id: newId, type: 'video-url', src: url, x: 200, y: 100, width: 600, height: 400, rotation: 0, animation: 'none' };
+    updateSlideElements([...slides[currentSlideIndex].elements, newElement]);
+    setActiveElementId(newId);
+  }
+
   const handleFileUpload = async (event) => {
     const file = event.target.files[0]; if (!file) return;
+
+    // Warnung bei sehr großen Dateien
+    if (file.size > 50 * 1024 * 1024) {
+      showToast("Große Datei: Der Upload läuft im Hintergrund. Nutze für noch schnellere Videos den 'Web-Video' Button!", "success");
+    }
+
     setIsUploading(true); let fileToUpload = file;
     if (file.type.startsWith('image/')) {
       try { fileToUpload = await imageCompression(file, { maxSizeMB: 0.5, maxWidthOrHeight: 1920, useWebWorker: true }) } catch (error) { console.error(error) }
@@ -478,7 +476,20 @@ function App() {
     } else if (el.type === 'image') {
       content = <img src={el.src} style={{ ...commonStyle, pointerEvents: 'none' }} draggable="false" />
     } else if (el.type === 'video') {
+      // WICHTIGER FIX: pointerEvents='auto' und controls={true} erlauben das Klicken/Abspielen des Videos!
       content = <video src={el.src} controls={true} style={{ ...commonStyle, pointerEvents: 'auto' }} />
+    } else if (el.type === 'video-url') {
+      if (el.src.includes('youtube.com') || el.src.includes('youtu.be')) {
+        let videoId = '';
+        if (el.src.includes('youtu.be/')) {
+          videoId = el.src.split('youtu.be/')[1]?.split('?')[0];
+        } else {
+          videoId = el.src.split('v=')[1]?.split('&')[0];
+        }
+        content = <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${videoId}?rel=0`} frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen style={{ ...commonStyle, pointerEvents: isViewer ? 'auto' : 'none' }}></iframe>
+      } else {
+        content = <video src={el.src} controls={true} style={{ ...commonStyle, pointerEvents: 'auto' }} />
+      }
     } else if (el.type === 'shape') {
       if (el.shapeType === 'line') {
         content = <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center' }}><div style={{ width: '100%', height: '4px', backgroundColor: el.color }}></div></div>
@@ -494,6 +505,7 @@ function App() {
     );
   }
 
+  // --- DIE NEUEN, SEHR KRÄFTIGEN FARBEN ---
   const globalStyles = `
     * { box-sizing: border-box; }
     body { margin: 0; padding: 0; background-color: #05080F; color: #FFF9E6; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; overflow-x: hidden; }
@@ -562,8 +574,10 @@ function App() {
     </>
   )
 
+  // NEU: Diese Funktion verarbeitet die Klicks links/rechts im Viewer, ignoriert aber Videos, iFrames und die Bodenleiste
   const handleViewerClick = (e) => {
-    if (e.target.tagName.toLowerCase() === 'video' || e.target.closest('button') || e.target.closest('.bottom-nav-bar')) {
+    // Verhindern, dass Video-Controls oder Buttons den Folienwechsel auslösen
+    if (e.target.tagName.toLowerCase() === 'video' || e.target.tagName.toLowerCase() === 'iframe' || e.target.closest('button') || e.target.closest('.bottom-nav-bar')) {
       return;
     }
     const clickX = e.clientX;
@@ -612,20 +626,8 @@ function App() {
             </button>
           </div>
 
+          {/* Der gesamte Bereich horcht jetzt auf Klicks, lässt aber Videos in Ruhe! */}
           <div className="fullscreen-viewer-content" style={{ flex: 1, position: 'relative', width: '100%', height: '100%', cursor: 'pointer' }} onClick={handleViewerClick}>
-
-            <button onClick={async (e) => { e.stopPropagation(); await exitFullscreen(); setIsFullscreenMode(false); if (!session) setActivePresentation(null); }} style={{ position: 'absolute', top: '20px', left: '20px', padding: '10px 20px', backgroundColor: 'rgba(212, 175, 55, 0.15)', color: '#E8C56C', border: '1px solid rgba(212, 175, 55, 0.4)', borderRadius: '30px', cursor: 'pointer', zIndex: 1000, backdropFilter: 'blur(5px)', transition: '0.3s' }} className="btn-glass">
-              <ChevronLeft size={20} style={{ verticalAlign: 'middle', marginRight: '5px' }} /> {session ? 'Beenden' : 'Zurück'}
-            </button>
-
-            <div
-              style={{ position: 'absolute', left: 0, top: 0, width: '50%', height: '100%', zIndex: 50, cursor: currentSlideIndex > 0 ? 'pointer' : 'default' }}
-              onClick={() => currentSlideIndex > 0 && setCurrentSlideIndex(prev => prev - 1)}
-            />
-            <div
-              style={{ position: 'absolute', right: 0, top: 0, width: '50%', height: '100%', zIndex: 50, cursor: currentSlideIndex < slides.length - 1 ? 'pointer' : 'default' }}
-              onClick={() => currentSlideIndex < slides.length - 1 && setCurrentSlideIndex(prev => prev + 1)}
-            />
 
             <div ref={containerRef} style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
               <div style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, minWidth: `${CANVAS_WIDTH}px`, minHeight: `${CANVAS_HEIGHT}px`, flexShrink: 0, backgroundColor: 'black', position: 'relative', transform: `scale(${scale})`, transformOrigin: 'center' }}>
@@ -635,6 +637,28 @@ function App() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* NEUE, NICHT-ÜBERLAPPENDE BOTTOM BAR (Inklusive "Beenden" Button) */}
+            <div className="bottom-nav-bar" style={{ position: 'absolute', bottom: '30px', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: '15px', alignItems: 'center', backgroundColor: 'rgba(5, 8, 15, 0.85)', padding: '10px 20px', borderRadius: '50px', backdropFilter: 'blur(10px)', border: '1px solid rgba(212, 175, 55, 0.3)', zIndex: 1000 }}>
+
+              <button onClick={async (e) => { e.stopPropagation(); await exitFullscreen(); setIsFullscreenMode(false); if (!session) setActivePresentation(null); }} className="btn-glass" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}>
+                <ChevronLeft size={18} /> Beenden
+              </button>
+
+              <div style={{ width: '1px', height: '24px', backgroundColor: 'rgba(212, 175, 55, 0.3)' }} />
+
+              <button disabled={currentSlideIndex === 0} onClick={(e) => { e.stopPropagation(); setCurrentSlideIndex(currentSlideIndex - 1); }} className="btn-glass" style={{ padding: '8px', borderRadius: '50%' }}>
+                <ChevronLeft size={24} color="#E8C56C" />
+              </button>
+
+              <span style={{ display: 'flex', alignItems: 'center', fontSize: '1.2rem', color: '#E8C56C', fontWeight: 'bold', minWidth: '50px', justifyContent: 'center' }}>
+                {currentSlideIndex + 1} / {slides.length}
+              </span>
+
+              <button disabled={currentSlideIndex === slides.length - 1} onClick={(e) => { e.stopPropagation(); setCurrentSlideIndex(currentSlideIndex + 1); }} className="btn-glass" style={{ padding: '8px', borderRadius: '50%' }}>
+                <ChevronRight size={24} color="#E8C56C" />
+              </button>
             </div>
           </div>
           {uiOverlays}
@@ -673,8 +697,14 @@ function App() {
             </button>
             <div style={{ width: '1px', height: '20px', backgroundColor: 'rgba(212, 175, 55, 0.3)', margin: '0 2px' }}></div>
             <input type="file" accept="image/*,video/*" ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} />
+
             <button onClick={() => fileInputRef.current.click()} disabled={isUploading} className="btn-glass" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.9rem' }}>
-              <ImageIcon size={14} /> {isUploading ? 'Medien...' : 'Bild/Video'}
+              <ImageIcon size={14} /> {isUploading ? 'Medien...' : 'Datei-Video'}
+            </button>
+
+            {/* NEU: WEB-VIDEO BUTTON */}
+            <button onClick={addVideoUrl} className="btn-glass" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.9rem' }}>
+              <LinkIcon size={14} /> Web-Video
             </button>
 
             <button onClick={addTextElement} className="btn-glass" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.9rem' }}>
